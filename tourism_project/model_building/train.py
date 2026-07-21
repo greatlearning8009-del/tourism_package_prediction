@@ -1,31 +1,24 @@
+# for data manipulation
 import pandas as pd
+# for building the preprocessing and modeling pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.pipeline import make_pipeline
 import xgboost as xgb
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+# for model serialization and experiment tracking
 import joblib
-from huggingface_hub import login, HfApi, create_repo
-from huggingface_hub.utils import RepositoryNotFoundError, HfHubHTTPError
 import mlflow
-import os
 
-mlflow.set_tracking_uri("http://localhost:8080")
+mlflow.set_tracking_uri("http://localhost:5000")
 mlflow.set_experiment("Tourism-Package-Prediction-Experiment")
 
-# Hugging Face API authentication
-api = HfApi(token=os.getenv("HF_TOKEN"))
-Xtrain_path = "hf://datasets/SRGL/tourism/Xtrain.csv"
-Xtest_path = "hf://datasets/SRGL/tourism/Xtest.csv"
-ytrain_path = "hf://datasets/SRGL/tourism/ytrain.csv"
-ytest_path = "hf://datasets/SRGL/tourism/ytest.csv"
-
-# Load datasets
-Xtrain = pd.read_csv(Xtrain_path)
-Xtest = pd.read_csv(Xtest_path)
-ytrain = pd.read_csv(ytrain_path)
-ytest = pd.read_csv(ytest_path)
+# Xtrain/Xtest/ytrain/ytest are downloaded from the previous job's artifact
+Xtrain = pd.read_csv("Xtrain.csv")
+Xtest = pd.read_csv("Xtest.csv")
+ytrain = pd.read_csv("ytrain.csv").squeeze()
+ytest = pd.read_csv("ytest.csv").squeeze()
 
 numeric_features = [
     'Age',
@@ -49,6 +42,7 @@ categorical_features = [
     'MaritalStatus',
     'Designation'
 ]
+
 # Set the class weight to handle class imbalance
 class_weight = ytrain.value_counts()[0] / ytrain.value_counts()[1]
 
@@ -78,7 +72,16 @@ with mlflow.start_run():
     grid_search = GridSearchCV(model_pipeline, param_grid, cv=5, n_jobs=-1)
     grid_search.fit(Xtrain, ytrain)
 
-    # Log hyperparameters
+    # Log every parameter combination tried during the search as a nested run,
+    # so all experiments can be compared side by side in the MLflow UI
+    results = grid_search.cv_results_
+    for i in range(len(results["params"])):
+        with mlflow.start_run(nested=True):
+            mlflow.log_params(results["params"][i])
+            mlflow.log_metric("mean_test_score", results["mean_test_score"][i])
+            mlflow.log_metric("std_test_score", results["std_test_score"][i])
+
+    # Log the best hyperparameters in the main run
     mlflow.log_params(grid_search.best_params_)
 
     # Store the best model
@@ -110,31 +113,9 @@ with mlflow.start_run():
         "test_f1-score": test_report['1']['f1-score']
     })
 
-    # Save the model locally
-    model_path = "best_tourism_package_model_v1.joblib"
+    # Save the model next to app.py so the Streamlit app can load it directly,
+    # and log it as an MLflow artifact for traceability
+    model_path = "tourism_project/deployment/best_tourism_package_model_v1.joblib"
     joblib.dump(best_model, model_path)
-
-    # Log the model artifact
     mlflow.log_artifact(model_path, artifact_path="model")
-    print(f"Model saved as artifact at: {model_path}")
-
-    # Upload to Hugging Face
-    repo_id = "SRGL/tourism-package-model"
-    repo_type = "model"
-
-    # Step 1: Check if the space exists
-    try:
-        api.repo_info(repo_id=repo_id, repo_type=repo_type)
-        print(f"Space '{repo_id}' already exists. Using it.")
-    except RepositoryNotFoundError:
-        print(f"Space '{repo_id}' not found. Creating new space...")
-        create_repo(repo_id=repo_id, repo_type=repo_type, private=False)
-        print(f"Space '{repo_id}' created.")
-
-    # create_repo("churn-model", repo_type="model", private=False)
-    api.upload_file(
-        path_or_fileobj="best_tourism_package_model_v1.joblib",
-        path_in_repo="best_tourism_package_model_v1.joblib",
-        repo_id=repo_id,
-        repo_type=repo_type,
-    )
+    print(f"Model saved to {model_path}")

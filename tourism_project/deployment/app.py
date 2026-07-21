@@ -8,7 +8,7 @@ model_path = os.path.join(os.path.dirname(__file__), "best_tourism_package_model
 model = joblib.load(model_path)
 
 # Streamlit UI for Tourism Package Prediction
-st.title("Tourism Package Prediction")
+st.title("Tourism Package Prediction - Harish")
 st.write("Fill the customer details below to predict if they'll purchase a travel package")
 
 # Collect user input
